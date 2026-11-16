@@ -167,6 +167,10 @@
     .success { text-align: center; }
     .success .big { font-size: 3rem; }
 
+    .edit-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; background: #fbf6e8; border: 1.5px solid var(--gold); color: #5d4a12; border-radius: 14px; padding: 12px 16px; margin-bottom: 16px; }
+    .edit-banner b { color: var(--navy); }
+    .btn-danger { background: #fff; color: var(--red); border-color: rgba(200,16,46,.35); }
+    .btn-danger:hover { background: var(--red); color: #fff; }
     /* Toast */
     .toast { position: fixed; left: 50%; top: 70px; transform: translateX(-50%) translateY(-10px); background: var(--navy); color: #fff; padding: 12px 20px; border-radius: 999px; font-weight: 600; opacity: 0; transition: all .25s; z-index: 60; max-width: calc(100% - 32px); text-align: center; pointer-events: none; }
     .toast.show { opacity: 1; transform: translateX(-50%); }
@@ -194,6 +198,10 @@
 
     <!-- ============ ADD PRODUCT ============ -->
     <section id="tab-add">
+      <div class="edit-banner" id="edit-banner" hidden>
+        <span>✏️ Editing <b id="edit-name"></b> <small id="edit-id"></small></span>
+        <button class="btn btn-ghost btn-sm" type="button" id="edit-cancel">Cancel editing</button>
+      </div>
       <form id="form" novalidate autocomplete="off">
         <div class="grid">
           <div>
@@ -357,7 +365,7 @@
         <p class="hint" id="list-info"></p>
         <div class="plist" id="plist"></div>
       </div>
-      <p class="hint">To edit prices, descriptions or delete a product, open your Google Sheet. Changes show on the site within seconds.</p>
+      <p class="hint">Tap ✏️ Edit to change a price, photos or details. Changes show in your shop within seconds.</p>
     </section>
   </main>
 
@@ -418,6 +426,20 @@
   };
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const money = n => "$" + (Number.isInteger(+n) ? +n : (+n).toFixed(2));
+
+  /* Your shop's address. Auto: on admin.sallaty.org it uses https://sallaty.org/
+     To force it, write it here, e.g. const SHOP_URL_OVERRIDE = "https://sallaty.org/"; */
+  const SHOP_URL_OVERRIDE = "";
+  const SHOP_URL = SHOP_URL_OVERRIDE ||
+    (location.hostname.startsWith("admin.") ? `${location.protocol}//${location.hostname.slice(6)}/` : "");
+  // logo & icons come from the shop when the admin page is on its own subdomain
+  if (SHOP_URL) {
+    document.querySelectorAll('img[src^="assets/"]').forEach(i => { i.src = SHOP_URL + i.getAttribute("src"); });
+    document.querySelectorAll('link[href^="assets/"]').forEach(l => { l.href = SHOP_URL + l.getAttribute("href"); });
+    document.querySelectorAll('a[href="index.html"]').forEach(a => { a.href = SHOP_URL; });
+  }
+  const productUrl = id => `${SHOP_URL}product.html?id=${encodeURIComponent(id)}`;
+  let editingId = null;
 
   let settings = { url: store.get("sallaty_admin_url"), key: store.get("sallaty_admin_key") };
   let photos = [];          // { file, url (preview), status }
@@ -571,8 +593,9 @@
   function toImg(v) {
     const m = v.match(/drive\.google\.com\/(?:file\/d\/|open\?id=|uc\?(?:export=\w+&)?id=)([\w-]+)/);
     if (m) return `https://drive.google.com/thumbnail?id=${m[1]}&sz=w600`;
-    if (/^https?:\/\//.test(v) || v.startsWith("assets/")) return v;
-    return "assets/products/" + v;
+    if (/^https?:\/\//.test(v)) return v;
+    if (v.startsWith("assets/")) return SHOP_URL + v;
+    return SHOP_URL + "assets/products/" + v;
   }
   $("#form").addEventListener("input", () => { preview(); if (document.querySelector(".has-error")) validate(); });
   $("#form").addEventListener("change", preview);
@@ -614,28 +637,80 @@
         sizes: val("sizes"), colors: val("colors"), tags: tags().join(", "),
         in_stock: $("#in_stock").checked ? "yes" : "no", featured: $("#featured").checked ? "yes" : "no"
       };
-      const r = await api("add", { product });
+      const r = editingId ? await api("update", { id: editingId, product }) : await api("add", { product });
+      if (editingId) r.id = editingId;
 
-      $("#done-text").textContent = `"${product.name}" was saved as ${r.id}. It will appear in your shop within a few seconds (or up to 5 minutes if you use the "Publish to web" link).`;
-      $("#done-view").href = `product.html?id=${encodeURIComponent(r.id)}`;
+      $("#done-title").textContent = editingId ? "Changes saved!" : "Product added!";
+      $("#done-another").textContent = editingId ? "Back to my products" : "Add another product";
+      $("#done-text").textContent = editingId
+        ? `"${product.name}" (${r.id}) was updated. Your shop shows the change within a few seconds (or up to 5 minutes with the "Publish to web" link).`
+        : `"${product.name}" was saved as ${r.id}. It will appear in your shop within a few seconds (or up to 5 minutes if you use the "Publish to web" link).`;
+      $("#done-view").href = productUrl(r.id);
       $("#done").hidden = false;
       products = []; // refresh list next time
     } catch (err) {
       toast(err.message, true);
       photos.forEach(p => { if (!p.uploaded) p.status = ""; }); renderThumbs();
     } finally {
-      btn.disabled = false; resetBtn.disabled = false; btn.textContent = "Add product";
+      btn.disabled = false; resetBtn.disabled = false; btn.textContent = editingId ? "Save changes" : "Add product";
     }
   });
 
   function resetForm() {
     $("#form").reset(); $("#in_stock").checked = true;
+    editingId = null; $("#edit-banner").hidden = true; $("#submit").textContent = "Add product";
+    document.querySelectorAll("#form details.more").forEach(d => { d.open = false; });
     photos.forEach(p => URL.revokeObjectURL(p.url)); photos = [];
     renderThumbs(); ["f-name", "f-price", "f-old"].forEach(f => setErr(f, "")); preview();
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
   $("#reset").onclick = () => { if (!val("name") && !photos.length || confirm("Clear the form?")) resetForm(); };
-  $("#done-another").onclick = () => { $("#done").hidden = true; resetForm(); $("#name").focus(); };
+  $("#done-another").onclick = () => {
+    const wasEditing = !!editingId;
+    $("#done").hidden = true; resetForm();
+    if (wasEditing) { products = []; showTab("list"); } else $("#name").focus();
+  };
+  $("#edit-cancel").onclick = () => { resetForm(); showTab("list"); };
+
+  function showTab(name) { document.querySelector(`.tab[data-tab="${name}"]`).click(); }
+
+  // Turn "12/24/2026" or "24/12/2026" or "2026-12-24" into 2026-12-24 for the date picker
+  function isoDate(v) {
+    v = String(v || "").trim(); if (!v) return "";
+    let m = v.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+    m = v.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/);
+    if (m) { const a = +m[1], b = +m[2]; const [d, mo] = a > 12 ? [a, b] : b > 12 ? [b, a] : [a, b];
+      return `${m[3]}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`; }
+    return "";
+  }
+
+  function startEdit(id) {
+    const p = products.find(x => String(x.id) === String(id));
+    if (!p) return toast("Product not found – press Refresh", true);
+    resetForm();
+    editingId = p.id;
+    const set = (f, v) => { const el = $("#" + f); if (el) el.value = v ?? ""; };
+    ["name", "name_ar", "category", "short_description", "short_description_ar", "description", "description_ar", "sizes", "colors"].forEach(f => set(f, p[f]));
+    set("price", String(p.price || "").replace(/[^\d.]/g, ""));
+    set("old_price", String(p.old_price || "").replace(/[^\d.]/g, ""));
+    set("offer_ends", isoDate(p.offer_ends));
+    set("features", String(p.features || "").split("|").map(x => x.trim()).filter(Boolean).join("\n"));
+    set("features_ar", String(p.features_ar || "").split("|").map(x => x.trim()).filter(Boolean).join("\n"));
+    set("image_links", String(p.images || "").split(/[|\n]/).map(x => x.trim()).filter(Boolean).join("\n"));
+    const t = String(p.tags || "").toLowerCase();
+    $$('input[name="tags"]').forEach(i => { i.checked = t.split(/[,|]/).map(x => x.trim()).includes(i.value); });
+    $("#in_stock").checked = !/^no$/i.test(String(p.in_stock).trim());
+    $("#featured").checked = /^yes$/i.test(String(p.featured).trim());
+    document.querySelectorAll("#form details.more").forEach(d => {
+      d.open = !!(d.querySelector("#image_links") ? $("#image_links").value : ($("#short_description_ar").value || $("#description_ar").value || $("#features_ar").value));
+    });
+    $("#edit-name").textContent = p.name; $("#edit-id").textContent = `(${p.id})`;
+    $("#edit-banner").hidden = false;
+    $("#submit").textContent = "Save changes";
+    showTab("add"); preview();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   /* ---------- My products ---------- */
   async function loadProducts(force) {
@@ -667,8 +742,10 @@
             <small>${esc(p.id || "")} · ${esc(p.category || "No category")} · ${sale ? `<s>$${esc(p.old_price)}</s> ` : ""}$${esc(p.price)}${/^no$/i.test(p.in_stock) ? " · Out of stock" : ""}${hidden ? " · Hidden" : ""}</small>
           </div>
           <div class="acts">
-            ${p.id ? `<a class="btn btn-ghost btn-sm" href="product.html?id=${encodeURIComponent(p.id)}" target="_blank" rel="noopener">View</a>` : ""}
+            ${p.id ? `<button class="btn btn-primary btn-sm" type="button" data-edit="${esc(p.id)}">✏️ Edit</button>` : ""}
+            ${p.id ? `<a class="btn btn-ghost btn-sm" href="${productUrl(p.id)}" target="_blank" rel="noopener">View</a>` : ""}
             ${p.id ? `<button class="btn btn-outline btn-sm" type="button" data-hide="${esc(p.id)}" data-state="${hidden ? 1 : 0}">${hidden ? "Show" : "Hide"}</button>` : ""}
+            ${p.id ? `<button class="btn btn-sm btn-danger" type="button" data-delete="${esc(p.id)}" aria-label="Delete ${esc(p.name)}">🗑</button>` : ""}
           </div>
         </div>`;
     }).join("") || '<p class="hint">No products yet. Add your first one!</p>';
@@ -676,6 +753,20 @@
   $("#list-q").addEventListener("input", renderList);
   $("#refresh").onclick = () => loadProducts(true);
   $("#plist").addEventListener("click", async e => {
+    const ed = e.target.closest("[data-edit]");
+    if (ed) { startEdit(ed.dataset.edit); return; }
+    const del = e.target.closest("[data-delete]");
+    if (del) {
+      const p = products.find(x => String(x.id) === del.dataset.delete);
+      if (!confirm(`Delete "${p ? p.name : del.dataset.delete}" permanently?\n\nTip: use "Hide" instead if you might sell it again.`)) return;
+      del.disabled = true;
+      try {
+        await api("delete", { id: del.dataset.delete });
+        products = products.filter(x => String(x.id) !== del.dataset.delete);
+        renderList(); toast("Product deleted");
+      } catch (err) { toast(err.message, true); del.disabled = false; }
+      return;
+    }
     const b = e.target.closest("[data-hide]"); if (!b) return;
     const hide = b.dataset.state !== "1";
     b.disabled = true; b.textContent = "…";
